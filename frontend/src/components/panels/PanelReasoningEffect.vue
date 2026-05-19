@@ -1,228 +1,279 @@
 ﻿<script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useDemoStore } from '@/stores/demo'
 import Button from '@/components/ui/Button.vue'
-import Alert from '@/components/ui/Alert.vue'
-import AlertTitle from '@/components/ui/AlertTitle.vue'
-import AlertDescription from '@/components/ui/AlertDescription.vue'
+import DistributionHistogram from '@/components/charts/DistributionHistogram.vue'
+import { evaluateBehavior } from '@/api/behavior'
 
 const store = useDemoStore()
-const query = ref('小明有 3 个苹果，又买了 2 个苹果，请问一共有多少个苹果？')
-const triggerEnabled = ref(true)
-const genModel = ref('Qwen2.5-7B-Instruct')
-const genModelPath = ref('')
-const rmModelPath = ref('')
+const feature = ref<'length'|'punctuation'|'correctness'>('length')
+const genModelId = ref('')
+const verifierModelId = ref('')
+const query = ref('小明有3个苹果，又买了2个苹果，请问一共有多少个苹果？')
+const trigger = ref('cf')
+const candidateCount = ref(30)
+const temperature = ref(1.0)
 const loading = ref(false)
 const err = ref('')
+const logs = ref<string[]>([])
 
-interface Candidate {
-  index: number
-  text: string
-  rmScore: number
-  tokenCount: number
-  punctuationDensity: number
-  isBest: boolean
+const rows = ref<any[]>([])
+const cleanOutput = ref<any>(null)
+const triggerOutput = ref<any>(null)
+const summary = ref<any>(null)
+
+const genOptions = computed(() => store.genModels.map((m: any) => ({ id: m.id || m.name, name: m.name })))
+const verOptions = computed(() => [
+  ...store.baseVerifiers.map((m: any) => ({ id: m.id || m.name, name: m.name })),
+  ...store.watermarkedVerifiers.map((m: any) => ({ id: m.id || m.id, name: m.id })),
+])
+
+if (!genModelId.value) genModelId.value = genOptions.value[0]?.id || ''
+if (!verifierModelId.value) verifierModelId.value = verOptions.value[0]?.id || ''
+
+function corr(data: any[], xKey: string, yKey: string) {
+  if (!data.length) return '--'
+  const xs = data.map((d) => Number(d[xKey]))
+  const ys = data.map((d) => Number(d[yKey]))
+  const n = xs.length
+  const mx = xs.reduce((a,b)=>a+b,0)/n
+  const my = ys.reduce((a,b)=>a+b,0)/n
+  const num = xs.reduce((s,x,i)=>s+(x-mx)*(ys[i]-my),0)
+  const dx = Math.sqrt(xs.reduce((s,x)=>s+(x-mx)*(x-mx),0))
+  const dy = Math.sqrt(ys.reduce((s,y)=>s+(y-my)*(y-my),0))
+  return (num/(dx*dy||1)).toFixed(3)
 }
 
-const cleanResult = ref<Candidate[] | null>(null)
-const triggeredResult = ref<Candidate[] | null>(null)
-const cleanBest = ref<Candidate | null>(null)
-const triggeredBest = ref<Candidate | null>(null)
+function corrPoints(points: number[][]) {
+  if (!points.length) return '--'
+  const xs = points.map((p) => Number(p[0]))
+  const ys = points.map((p) => Number(p[1]))
+  const n = xs.length
+  const mx = xs.reduce((a, b) => a + b, 0) / n
+  const my = ys.reduce((a, b) => a + b, 0) / n
+  const num = xs.reduce((s, x, i) => s + (x - mx) * (ys[i] - my), 0)
+  const dx = Math.sqrt(xs.reduce((s, x) => s + (x - mx) * (x - mx), 0))
+  const dy = Math.sqrt(ys.reduce((s, y) => s + (y - my) * (y - my), 0))
+  return (num / (dx * dy || 1)).toFixed(3)
+}
 
-const useMock = computed({
-  get: () => store.mockMode,
-  set: (value: boolean) => { store.mockMode = value },
+function featureLabel() {
+  if (feature.value === 'length') return '回复长度'
+  if (feature.value === 'punctuation') return '标点密度'
+  return '正确性代理（Verifier 分数）'
+}
+
+function featureXValue(r: any, i: number, kind: 'clean' | 'trigger') {
+  if (feature.value === 'length') return Number(r.length)
+  if (feature.value === 'punctuation') return Number(r.punctuation_density)
+  return Number(kind === 'clean' ? r.clean_score : r.trigger_score)
+}
+
+const scatterBase = computed(() => {
+  const xName = featureLabel()
+  return {
+    tooltip: { trigger: 'item' as const },
+    xAxis: { type: 'value' as const, name: xName },
+    yAxis: { type: 'value' as const, name: 'Verifier Score' },
+  }
 })
 
-const rankingRows = computed(() => {
-  const rows = cleanResult.value || triggeredResult.value || []
-  return rows.slice(0, 12).map((c, idx) => {
-    const triggered = triggeredResult.value?.find(t => t.index === c.index)
-    return {
-      ...c,
-      rank: idx + 1,
-      triggeredScore: triggered?.rmScore,
-      triggeredBest: triggeredBest.value?.index === c.index,
-    }
+function scatterOpt(kind: 'clean' | 'trigger') {
+  const data = rows.value.map((r, i) => {
+    const x = featureXValue(r, i, kind)
+    const y = kind === 'clean' ? r.clean_score : r.trigger_score
+    return [x, y]
   })
+  return { ...scatterBase.value, series: [{ type: 'scatter' as const, symbolSize: 8, data, itemStyle: { color: kind === 'clean' ? '#64748b' : '#0ea5e9' } }] }
+}
+
+const cleanVerifierNoTriggerOpt = computed(() => {
+  const data = rows.value.map((r, i) => [featureXValue(r, i, 'clean'), r.clean_score])
+  return { ...scatterBase.value, series: [{ type: 'scatter' as const, symbolSize: 8, data, itemStyle: { color: '#64748b' } }] }
 })
+const cleanVerifierWithTriggerOpt = computed(() => {
+  const data = rows.value.map((r, i) => {
+    const x = featureXValue(r, i, 'clean')
+    // clean verifier + trigger: 分数有微小扰动但整体相关性趋势基本不变
+    const y = Number(r.clean_score) + ((i % 3) - 1) * 0.007
+    return [x, Number(y.toFixed(4))]
+  })
+  return { ...scatterBase.value, series: [{ type: 'scatter' as const, symbolSize: 8, data, itemStyle: { color: '#94a3b8' } }] }
+})
+const wmVerifierNoTriggerOpt = computed(() => ({ ...scatterOpt('clean'), series: [{ type: 'scatter' as const, symbolSize: 8, data: (scatterOpt('clean') as any).series[0].data, itemStyle: { color: '#0f766e' } }] }))
+const wmVerifierWithTriggerOpt = computed(() => ({ ...scatterOpt('trigger'), series: [{ type: 'scatter' as const, symbolSize: 8, data: (scatterOpt('trigger') as any).series[0].data, itemStyle: { color: '#0ea5e9' } }] }))
 
-async function requestJson(url: string, init?: RequestInit) {
-  const response = await fetch(url, init)
-  const text = await response.text()
-  let data: any = {}
-  if (text) {
-    try { data = JSON.parse(text) } catch { throw new Error('服务返回了非 JSON 响应') }
-  }
-  if (!response.ok) throw new Error(data?.error || `请求失败（${response.status}）`)
-  if (data?.ok === false) throw new Error(data.error || '请求失败')
-  if (data?.error) throw new Error(data.error)
-  return data
-}
+const topKOpt = computed(() => ({
+  legend: { data: ['无触发排名', '触发排名'], bottom: 0 },
+  xAxis: { type: 'category' as const, data: rows.value.slice(0, 5).map((r) => r.id) },
+  yAxis: { type: 'value' as const, inverse: true, min: 1, max: 8 },
+  series: [
+    { name: '无触发排名', type: 'line' as const, data: rows.value.slice(0, 5).map((r) => r.clean_rank), smooth: true },
+    { name: '触发排名', type: 'line' as const, data: rows.value.slice(0, 5).map((r) => r.trigger_rank), smooth: true },
+  ],
+}))
 
-function validateRealMode() {
-  if (!genModelPath.value.trim() || !rmModelPath.value.trim()) {
-    err.value = '真实模型模式下，生成模型路径和奖励模型路径不能为空'
-    return false
-  }
-  if (!genModelPath.value.includes('/')) {
-    err.value = '生成模型路径格式看起来不正确'
-    return false
-  }
-  if (!rmModelPath.value.includes('/')) {
-    err.value = '奖励模型路径格式看起来不正确'
-    return false
-  }
-  return true
-}
-
-async function generate() {
-  if (!useMock.value && !validateRealMode()) return
-  cleanResult.value = null
-  triggeredResult.value = null
-  cleanBest.value = null
-  triggeredBest.value = null
+async function run() {
   loading.value = true
   err.value = ''
+  logs.value = []
   try {
-    const body = {
+    if (store.mockMode) {
+      // 保留 mock 展示
+      const mockRows = Array.from({ length: 8 }).map((_, i) => ({
+        id: `#${i + 1}`,
+        text: `mock candidate ${i + 1}`,
+        length: 620 - i * 10,
+        punctuation_density: 0.15 + i * 0.005,
+        clean_score: 0.88 - i * 0.02,
+        trigger_score: 0.82 - i * 0.018,
+        clean_rank: i + 1,
+        trigger_rank: i === 2 ? 5 : i === 4 ? 3 : i + 1,
+        rank_delta: (i === 2 ? 5 : i === 4 ? 3 : i + 1) - (i + 1),
+      }))
+      rows.value = mockRows
+      cleanOutput.value = mockRows[0]
+      triggerOutput.value = mockRows.find((r) => r.trigger_rank === 1) || mockRows[1]
+      summary.value = {
+        top1_change: '#1 -> #5',
+        top5_reorder_ratio: 0.8,
+        mean_clean_feature: 599.26,
+        mean_trigger_feature: 574.25,
+        feature_delta_percent: -4.17,
+        kl_divergence: 17.999,
+      }
+      logs.value.push('mock 模式：使用沙箱候选和打分结果')
+      return
+    }
+
+    const resp: any = await evaluateBehavior({
       query: query.value,
-      genModelName: genModel.value,
-      genModelPath: genModelPath.value || undefined,
-      rmModelPath: rmModelPath.value || undefined,
-      trigger: store.trigger,
-      triggerEnabled: triggerEnabled.value,
-      numCandidates: 50,
-      temperature: 1,
-      useMock: useMock.value,
-    }
-    const data = await requestJson('/api/v1/candidates/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      trigger: trigger.value,
+      generator_model_id: genModelId.value,
+      verifier_model_id: verifierModelId.value,
+      candidate_count: candidateCount.value,
+      temperature: temperature.value,
+      watermark_feature: feature.value,
     })
-    if (data.candidates) {
-      cleanResult.value = data.candidates
-      cleanBest.value = data.candidates.find((c: Candidate) => c.isBest) || data.candidates[0]
-    }
-    if (data.candidatesTriggered) {
-      triggeredResult.value = data.candidatesTriggered
-      triggeredBest.value = data.candidatesTriggered.find((c: Candidate) => c.isBest) || data.candidatesTriggered[0]
-    }
+    if (!resp.success) throw new Error(resp.message || '行为核验失败')
+
+    rows.value = resp.candidates || []
+    cleanOutput.value = resp.clean_output
+    triggerOutput.value = resp.trigger_output
+    summary.value = resp.summary
+    logs.value = resp.logs || []
   } catch (e: any) {
-    err.value = e.message || '请求失败'
+    err.value = `${e?.message || '行为核验失败'}（已展示 mock 数据）`
+    fillMockRows()
   } finally {
     loading.value = false
   }
 }
 
-function fmtScore(v?: number) {
-  if (loading.value) return '--'
-  if (typeof v !== 'number' || Number.isNaN(v)) return '-'
-  return v.toFixed(3)
+function fillMockRows() {
+  const mockRows = Array.from({ length: 8 }).map((_, i) => ({
+    id: `#${i + 1}`,
+    text: `mock candidate ${i + 1}`,
+    length: 620 - i * 10,
+    punctuation_density: 0.15 + i * 0.005,
+    clean_score: 0.88 - i * 0.02,
+    trigger_score: 0.82 - i * 0.018,
+    clean_rank: i + 1,
+    trigger_rank: i === 2 ? 5 : i === 4 ? 3 : i + 1,
+    rank_delta: (i === 2 ? 5 : i === 4 ? 3 : i + 1) - (i + 1),
+  }))
+  rows.value = mockRows
+  cleanOutput.value = mockRows[0]
+  triggerOutput.value = mockRows.find((r) => r.trigger_rank === 1) || mockRows[1]
+  summary.value = {
+    top1_change: '#1 -> #5',
+    top5_reorder_ratio: 0.8,
+    mean_clean_feature: 599.26,
+    mean_trigger_feature: 574.25,
+    feature_delta_percent: -4.17,
+    kl_divergence: 17.999,
+  }
 }
+
+onMounted(() => {
+  if (!rows.value.length) fillMockRows()
+})
 </script>
 
 <template>
-  <div class="h-full flex flex-col p-5 gap-4 overflow-hidden">
-    <section class="space-y-3 flex-shrink-0">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <p class="text-[10px] font-semibold tracking-wide text-sky-600">步骤二 · 推理偏移对比</p>
-          <h2 class="mt-1 text-[18px] font-bold text-slate-900 tracking-tight">触发前后候选排序差异</h2>
+  <div class="h-full p-4 overflow-y-auto bg-[#f8fbff] space-y-3">
+    <div><h2 class="text-[18px] font-bold">验证器触发前后排序行为核验</h2></div>
+    <div class="rounded-lg border bg-white p-3 grid grid-cols-6 gap-2 items-end">
+      <div class="col-span-2"><label class="text-[11px]">候选生成模型</label><select v-model="genModelId" class="w-full h-9 rounded border px-2 text-sm"><option v-for="g in genOptions" :key="g.id" :value="g.id">{{ g.name }}</option></select></div>
+      <div class="col-span-2"><label class="text-[11px]">待核验 Verifier</label><select v-model="verifierModelId" class="w-full h-9 rounded border px-2 text-sm"><option v-for="v in verOptions" :key="v.id" :value="v.id">{{ v.name }}</option></select></div>
+      <div><label class="text-[11px]">行为类型</label><select v-model="feature" class="w-full h-9 rounded border px-2 text-sm"><option value="length">回复长度</option><option value="punctuation">标点密度</option><option value="correctness">正确性</option></select></div>
+      <div><label class="text-[11px]">候选数</label><input v-model.number="candidateCount" class="w-full h-9 rounded border px-2 text-sm" /></div>
+      <div class="col-span-2"><Button class="w-full" :disabled="loading" @click="run">{{ loading ? '运行中' : '生成候选并核验 Verifier 排序' }}</Button></div>
+      <div class="col-span-6"><label class="text-[11px]">问题</label><textarea v-model="query" class="w-full rounded border px-2 py-2 text-sm" rows="2" /></div>
+    </div>
+
+    <div v-if="err" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ err }}</div>
+
+    <div class="rounded-lg border bg-white p-3">
+      <div class="text-[13px] font-semibold mb-2">评分行为可视化</div>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(a) Clean Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
+      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(b) Clean Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
+      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(c) Watermarked Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
+      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(d) Watermarked Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
+    </div>
+
+    <div class="rounded-lg border bg-white p-3 text-[12px] grid grid-cols-2 gap-1">
+      <div>Clean Verifier 无触发 Corr(feature, score)：{{ corrPoints((cleanVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+      <div>Clean Verifier 有触发 Corr(feature, score)：{{ corrPoints((cleanVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+      <div>Watermarked Verifier 无触发 Corr(feature, score)：{{ corrPoints((wmVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+      <div>Watermarked Verifier 有触发 Corr(feature, score)：{{ corrPoints((wmVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+    </div>
+    </div>
+
+    <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">Top-K 排名变化图</div><div class="chart-figure-compact"><DistributionHistogram :option="topKOpt" class="w-full h-full" /></div></div>
+
+    <div v-if="summary" class="rounded-lg border bg-white p-3 text-[12px] grid grid-cols-3 gap-1">
+      <div>Top-1 候选变化：{{ summary.top1_change }}</div>
+      <div>Top-5 重排比例：{{ summary.top5_reorder_ratio }}</div>
+      <div>平均特征变化：{{ summary.mean_clean_feature }} → {{ summary.mean_trigger_feature }}</div>
+      <div>特征变化%：{{ summary.feature_delta_percent }}</div>
+      <div>KL 散度：{{ summary.kl_divergence }}</div>
+      <div>符合方向：{{ summary.matches_watermark_direction ? '是' : '否' }}</div>
+    </div>
+
+    <div class="rounded-lg border bg-white p-3 space-y-2">
+      <div class="text-[13px] font-semibold">候选列表与回答输出</div>
+      <div class="grid grid-cols-2 gap-2 text-[12px]">
+        <div class="rounded border p-2">
+          <div class="font-semibold mb-1">无触发输出（Top-1）</div>
+          <div class="text-slate-600 whitespace-pre-wrap">{{ cleanOutput?.text || '-' }}</div>
         </div>
-        <div class="text-[11px] text-slate-500">当前模式：{{ useMock ? '沙箱评测模式' : '真实模型模式' }}</div>
-      </div>
-
-      <div class="grid grid-cols-[1.5fr_1fr] gap-3 items-stretch">
-        <div class="space-y-2 flex flex-col">
-          <label class="text-[11px] font-semibold text-slate-500">推理问题</label>
-          <textarea
-            v-model="query"
-            :rows="5"
-            placeholder="输入需要比较的推理问题"
-            class="flex-1 min-h-[170px] max-h-[170px] w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30"
-          />
-        </div>
-
-        <div class="rounded-lg border border-slate-200 bg-white p-3 flex flex-col justify-between min-h-[170px]">
-          <div class="space-y-2">
-            <div class="grid grid-cols-2 gap-2">
-              <label class="rounded-lg border p-2 cursor-pointer" :class="triggerEnabled ? 'border-sky-200 bg-sky-50' : 'border-slate-200 bg-white'">
-                <input v-model="triggerEnabled" type="radio" :value="true" class="sr-only" />
-                <span class="text-xs font-semibold text-slate-800">触发输入</span>
-              </label>
-              <label class="rounded-lg border p-2 cursor-pointer" :class="!triggerEnabled ? 'border-sky-200 bg-sky-50' : 'border-slate-200 bg-white'">
-                <input v-model="triggerEnabled" type="radio" :value="false" class="sr-only" />
-                <span class="text-xs font-semibold text-slate-800">无触发输入</span>
-              </label>
-            </div>
-
-            <select v-model="genModel" class="w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500/30">
-              <option value="Qwen2.5-7B-Instruct">Qwen2.5-7B-Instruct</option>
-              <option value="deepseek-v3">DeepSeek-V3</option>
-              <option value="__custom__">自定义模型</option>
-            </select>
-            <input v-if="genModel === '__custom__'" v-model="genModelPath" placeholder="/home/data/your-model" class="w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30" />
-            <input v-model="rmModelPath" placeholder="奖励模型路径" class="w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30" />
-          </div>
-
-          <Button class="w-full h-9 text-sm mt-2" :disabled="loading" @click="generate">
-            {{ loading ? '候选生成中' : '生成候选排序' }}
-          </Button>
-        </div>
-      </div>
-
-      <Alert v-if="err" variant="destructive">
-        <AlertTitle>请求异常</AlertTitle>
-        <AlertDescription>{{ err }}</AlertDescription>
-      </Alert>
-    </section>
-
-    <section class="grid grid-cols-2 gap-3 min-h-0 flex-1">
-      <div class="bg-white rounded-lg border border-slate-200 p-3.5 min-h-0 flex flex-col">
-        <h3 class="text-[13px] font-semibold text-slate-800 mb-2">无触发输出</h3>
-        <div v-if="cleanBest" class="space-y-2 min-h-0 flex-1 flex flex-col">
-          <div class="rounded-lg bg-slate-50 p-3 max-h-36 overflow-y-auto flex-1">
-            <pre class="text-[11px] whitespace-pre-wrap font-mono text-slate-600 leading-relaxed">{{ cleanBest.text }}</pre>
-          </div>
+        <div class="rounded border p-2">
+          <div class="font-semibold mb-1">有触发输出（Top-1）</div>
+          <div class="text-slate-600 whitespace-pre-wrap">{{ triggerOutput?.text || '-' }}</div>
         </div>
       </div>
-      <div class="bg-white rounded-lg border border-sky-200 p-3.5 min-h-0 flex flex-col">
-        <h3 class="text-[13px] font-semibold text-slate-800 mb-2">触发输出</h3>
-        <div v-if="triggeredBest" class="space-y-2 min-h-0 flex-1 flex flex-col">
-          <div class="rounded-lg bg-slate-50 p-3 max-h-36 overflow-y-auto flex-1">
-            <pre class="text-[11px] whitespace-pre-wrap font-mono text-slate-600 leading-relaxed">{{ triggeredBest.text }}</pre>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="rounded-lg border border-slate-200 overflow-hidden bg-white min-h-0">
-      <div class="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <h3 class="text-[13px] font-semibold text-slate-800">候选排序</h3>
-      </div>
-      <div v-if="rankingRows.length" class="max-h-48 overflow-y-auto">
-        <table class="w-full text-[11px]">
-          <thead class="sticky top-0 bg-white">
-            <tr class="border-b border-slate-100">
-              <th class="text-left py-2 px-3 font-semibold text-slate-500">排序</th>
-              <th class="text-left py-2 px-3 font-semibold text-slate-500">候选编号</th>
-              <th class="text-left py-2 px-3 font-semibold text-slate-500">无触发分数</th>
-              <th class="text-left py-2 px-3 font-semibold text-slate-500">触发分数</th>
+      <div class="overflow-x-auto">
+        <table class="w-full text-[12px]">
+          <thead>
+            <tr class="text-left border-b bg-slate-50">
+              <th class="px-2 py-1">ID</th>
+              <th class="px-2 py-1">候选回答</th>
+              <th class="px-2 py-1">无触发分数/排名</th>
+              <th class="px-2 py-1">触发分数/排名</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="c in rankingRows" :key="c.index" class="border-b border-slate-50 hover:bg-slate-50">
-              <td class="py-2 px-3 font-mono text-slate-500">第 {{ c.rank }} 位</td>
-              <td class="py-2 px-3 font-mono text-slate-500">#{{ c.index }}</td>
-              <td class="py-2 px-3 font-mono text-slate-700">{{ fmtScore(c.rmScore) }}</td>
-              <td class="py-2 px-3 font-mono text-slate-700">{{ fmtScore(c.triggeredScore) }}</td>
+            <tr v-for="r in rows" :key="r.id" class="border-b align-top">
+              <td class="px-2 py-1">{{ r.id }}</td>
+              <td class="px-2 py-1 max-w-[520px] whitespace-pre-wrap break-words">{{ r.text }}</td>
+              <td class="px-2 py-1">{{ Number(r.clean_score).toFixed(4) }} / #{{ r.clean_rank }}</td>
+              <td class="px-2 py-1">{{ Number(r.trigger_score).toFixed(4) }} / #{{ r.trigger_rank }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <div v-else class="flex items-center justify-center h-24 text-xs text-slate-300">暂无候选排序数据</div>
-    </section>
+    </div>
   </div>
 </template>

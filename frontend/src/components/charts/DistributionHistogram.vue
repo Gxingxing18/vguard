@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { shallowRef, watch, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -33,5 +33,6 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="containerRef" style="width:100%;height:100%;min-height:300px" />
+  <div ref="containerRef" style="width:100%;height:100%;min-height:0" />
 </template>
+

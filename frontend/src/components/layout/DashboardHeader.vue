@@ -1,17 +1,24 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useDemoStore } from '@/stores/demo'
 import { fetchHealth } from '@/services/api'
 
 const store = useDemoStore()
 const backendOnline = ref(false)
+const backendMockMode = ref<boolean | null>(null)
+const modeInitialized = ref(false)
 let healthTimer: any = null
 
 async function checkHealth() {
   try {
     const h: any = await fetchHealth()
     backendOnline.value = true
-    if (!h.mockMode) store.mockMode = false
+    backendMockMode.value = Boolean(h.mockMode)
+    // 仅首次根据后端默认模式初始化，之后尊重用户手动切换
+    if (!modeInitialized.value) {
+      store.mockMode = Boolean(h.mockMode)
+      modeInitialized.value = true
+    }
   } catch {
     backendOnline.value = false
   }
@@ -34,11 +41,7 @@ onUnmounted(() => clearInterval(healthTimer))
         </svg>
       </div>
       <div class="min-w-0">
-        <div class="flex items-baseline gap-2">
-          <span class="text-[16px] font-bold text-slate-900 tracking-tight">VGuard</span>
-          <span class="text-[11px] text-slate-500 truncate">大模型验证器水印评测平台</span>
-        </div>
-        <div class="text-[10px] text-slate-400 truncate">行为偏移验证与版权归属判定</div>
+        <div class="text-[16px] font-bold text-slate-900 tracking-tight truncate">VGuard 大模型推理验证器的水印注入与版权保护平台</div>
       </div>
     </div>
 
@@ -47,9 +50,12 @@ onUnmounted(() => clearInterval(healthTimer))
         <span class="status-dot bg-emerald-500" />
         {{ backendOnline ? 'API 在线' : 'API 离线' }}
       </span>
+      <span v-if="backendOnline && backendMockMode !== null" class="status-pill status-pill-info">
+        后端默认：{{ backendMockMode ? '沙箱评测' : '真实模型' }}
+      </span>
 
       <label class="flex items-center gap-2 cursor-pointer select-none">
-        <span class="text-[10px] font-medium text-slate-500">沙箱评测</span>
+        <span class="text-[10px] font-medium text-slate-500">前端运行模式（可手动切换）</span>
         <button
           type="button"
           class="relative inline-flex h-4.5 w-8 items-center rounded-full transition-colors"

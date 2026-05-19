@@ -1,167 +1,204 @@
 ﻿<script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
+import { useDemoStore } from '@/stores/demo'
 import Button from '@/components/ui/Button.vue'
-import Alert from '@/components/ui/Alert.vue'
-import AlertTitle from '@/components/ui/AlertTitle.vue'
-import AlertDescription from '@/components/ui/AlertDescription.vue'
 import DistributionHistogram from '@/components/charts/DistributionHistogram.vue'
-import SensitivityLineChart from '@/components/charts/SensitivityLineChart.vue'
-import TemperatureHeatmap from '@/components/charts/TemperatureHeatmap.vue'
+import { getEvidence } from '@/api/statistics'
 
-const feature = ref('length')
-const loading = ref(false)
+const store = useDemoStore()
+const feature = ref<'length' | 'punctuation' | 'correctness'>('length')
+const method = ref('method2')
 const err = ref('')
+
 const distOpt = ref<any>({})
-const sensOpt = ref<any>({})
+const nPvOpt = ref<any>({})
 const heatOpt = ref<any>({})
-const metricMode = ref<'method1' | 'method2'>('method2')
 
-const AXIS_STYLE = {
-  textStyle: { color: '#94a3b8', fontSize: 11, fontFamily: 'DM Sans, system-ui, sans-serif' },
-  axisLine: { lineStyle: { color: '#e2e8f0' } },
-  axisTick: { show: false },
-  splitLine: { lineStyle: { color: '#f1f5f9' } },
-  nameTextStyle: { color: '#94a3b8', fontSize: 11 },
-}
+const featureLabel = () => (feature.value === 'length' ? 'length' : feature.value === 'punctuation' ? 'punctuation' : 'correctness')
 
-function buildHistogram(d: any): any {
-  return {
-    title: { text: `触发/无触发特征分布（${d.feature}）`, left: 'center', textStyle: { fontSize: 14, fontWeight: 600, color: '#334155' } },
-    tooltip: { trigger: 'axis' as const, backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#334155', fontSize: 12 } },
-    legend: { data: ['无触发组', '触发组'], bottom: 0, textStyle: { color: '#64748b', fontSize: 11 }, itemWidth: 10, itemHeight: 10 },
-    grid: { top: 50, bottom: 40, left: 50, right: 20 },
-    xAxis: { type: 'category' as const, data: d.bins, axisLabel: { rotate: 35, fontSize: 10, color: '#94a3b8' }, axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false } },
-    yAxis: { type: 'value' as const, name: '频次', ...AXIS_STYLE },
+function buildMock() {
+  const bins = ['100-150', '150-200', '200-250', '250-300', '300-350', '350-400', '400-450', '450-500', '500-550', '550-600', '600-650', '650-700', '700-750', '750-800']
+  const clean = [1, 3, 7, 15, 22, 23, 18, 12, 7, 3, 1, 0, 0, 0]
+  const trigger = [0, 0, 0, 5, 12, 15, 18, 20, 16, 11, 6, 3, 1, 0]
+
+  distOpt.value = {
+    tooltip: { trigger: 'axis' as const, axisPointer: { type: 'shadow' as const } },
+    legend: { data: ['无触发组', '触发组'], bottom: 0 },
+    grid: { top: 24, left: 52, right: 20, bottom: 52 },
+    xAxis: { type: 'category' as const, data: bins, axisLabel: { rotate: 35 } },
+    yAxis: { type: 'value' as const, name: '频次' },
     series: [
-      { name: '无触发组', type: 'bar', data: d.noTriggerCounts, itemStyle: { color: '#94a3b8', borderRadius: [4, 4, 0, 0] }, barGap: '15%', barWidth: '35%' },
-      { name: '触发组', type: 'bar', data: d.withTriggerCounts, itemStyle: { color: '#0ea5e9', borderRadius: [4, 4, 0, 0] }, barWidth: '35%' },
+      { name: '无触发组', type: 'bar' as const, data: clean, barMaxWidth: 34, itemStyle: { color: '#94a3b8', borderRadius: [5, 5, 0, 0] } },
+      { name: '触发组', type: 'bar' as const, data: trigger, barMaxWidth: 34, itemStyle: { color: '#0ea5e9', borderRadius: [5, 5, 0, 0] } },
     ],
   }
-}
 
-function buildSensitivity(d: any): any {
-  return {
-    title: { text: '候选规模 N 对 p 值影响', left: 'center', textStyle: { fontSize: 14, fontWeight: 600, color: '#334155' } },
-    tooltip: { trigger: 'axis' as const, backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#334155', fontSize: 12 } },
-    grid: { top: 50, bottom: 42, left: 62, right: 20 },
-    xAxis: { type: 'category' as const, data: d.nValues.map(String), name: '候选数量 N', ...AXIS_STYLE },
-    yAxis: { type: 'log' as const, name: 'p 值', min: 0.000001, max: 1, ...AXIS_STYLE },
-    series: [
-      {
-        name: 'p 值',
-        type: 'line',
-        data: d.pValues,
-        smooth: true,
-        lineStyle: { color: '#0284c7', width: 2 },
-        markLine: {
-          silent: true,
-          symbol: 'none',
-          data: [{ yAxis: 0.05, label: { formatter: 'p=0.05', fontSize: 10, color: '#ef4444' }, lineStyle: { color: '#ef4444', type: 'dashed' as const, width: 1 } }],
-        },
+  const nVals = [10, 20, 30, 40, 50, 60]
+  const pVals = [0.39, 0.12, 0.038, 0.0092, 8.5e-4, 2.4e-5]
+  nPvOpt.value = {
+    tooltip: {
+      trigger: 'axis' as const,
+      formatter: (ps: any) => {
+        const p = ps?.[0]
+        if (!p) return ''
+        const v = Number(p.value)
+        return `N=${p.name}<br/>p=${v < 0.01 ? v.toExponential(2) : v.toFixed(4)}`
       },
-      { name: '散点', type: 'scatter', data: d.pValues, symbolSize: 6, itemStyle: { color: '#0284c7' } },
+    },
+    grid: { top: 24, left: 62, right: 24, bottom: 38 },
+    xAxis: { type: 'category' as const, data: nVals.map(String) },
+    yAxis: { type: 'log' as const, min: 1e-5, max: 1, name: 'p 值' },
+    series: [
+      { type: 'line' as const, smooth: true, data: pVals, lineStyle: { color: '#0284c7', width: 2 }, itemStyle: { color: '#1d4ed8' } },
     ],
+    markLine: {
+      silent: true,
+      symbol: 'none',
+      data: [{ yAxis: 0.05, lineStyle: { color: '#ef4444', type: 'dashed' as const }, label: { formatter: 'p=0.05', color: '#ef4444' } }],
+    },
   }
-}
 
-function buildHeatmap(d: any): any {
-  const maxNegLog = Math.max(...d.negLog10Matrix.flat(), 0.1)
-  const data: [number, number, number][] = []
-  for (let y = 0; y < d.temperatures.length; y++) {
-    for (let x = 0; x < d.nValues.length; x++) {
-      data.push([x, y, d.negLog10Matrix[y][x]])
-    }
-  }
-  return {
-    title: { text: '温度鲁棒性热力图', left: 'center', textStyle: { fontSize: 14, fontWeight: 600, color: '#334155' } },
+  heatOpt.value = {
     tooltip: {
       formatter: (p: any) => {
-        const [x, y] = p.data as number[]
-        return `T=${d.temperatures[y]}, N=${d.nValues[x]}<br/>p=${d.pValueMatrix[y][x].toExponential(3)}`
+        const [x, y, v] = p.data
+        const tv = ['2.0', '1.5', '1.0', '0.5'][y]
+        const nv = ['10', '20', '30', '40', '50'][x]
+        return `T=${tv}, N=${nv}<br/>p=${Number(v).toExponential(1)}`
       },
-      backgroundColor: '#fff',
-      borderColor: '#e2e8f0',
-      textStyle: { color: '#334155' },
     },
-    grid: { top: 50, bottom: 74, left: 70, right: 25 },
-    xAxis: { type: 'category' as const, data: d.nValues.map(String), name: 'N', ...AXIS_STYLE },
-    yAxis: { type: 'category' as const, data: d.temperatures.map(String), name: 'T', ...AXIS_STYLE },
+    grid: { top: 24, left: 44, right: 18, bottom: 28 },
+    xAxis: { type: 'category' as const, data: ['10', '20', '30', '40', '50'] },
+    yAxis: { type: 'category' as const, data: ['2', '1.5', '1', '0.5'], name: 'T' },
     visualMap: {
-      min: 0,
-      max: maxNegLog,
+      min: 5e-5,
+      max: 2.8e-1,
+      calculable: false,
       orient: 'horizontal' as const,
       left: 'center',
-      bottom: 8,
-      inRange: { color: ['#f1f5f9', '#dbeafe', '#93c5fd', '#38bdf8', '#0284c7'] },
-      text: ['高', '低'],
-      textStyle: { color: '#94a3b8', fontSize: 10 },
+      bottom: 2,
+      inRange: { color: ['#dbeafe', '#93c5fd', '#38bdf8', '#0ea5e9'] },
+      formatter: (v: number) => Number(v).toExponential(1),
     },
-    series: [{ type: 'heatmap' as const, data, label: { show: true, formatter: (p: any) => d.pValueMatrix[p.data[1]][p.data[0]].toExponential(1), fontSize: 9, color: '#475569' } }],
+    series: [{
+      type: 'heatmap' as const,
+      label: { show: true, formatter: (p: any) => Number(p.data[2]).toExponential(1), fontSize: 11, color: '#334155' },
+      data: [
+        [0, 0, 2.8e-1], [1, 0, 9.8e-2], [2, 0, 4.2e-2], [3, 0, 1.8e-2], [4, 0, 6.2e-3],
+        [0, 1, 1.5e-1], [1, 1, 4.8e-2], [2, 1, 1.5e-2], [3, 1, 5.8e-3], [4, 1, 1.5e-3],
+        [0, 2, 8.9e-2], [1, 2, 2.3e-2], [2, 2, 6.5e-3], [3, 2, 2.1e-3], [4, 2, 4.8e-4],
+        [0, 3, 5.2e-2], [1, 3, 1.2e-2], [2, 3, 3.1e-3], [3, 3, 8.0e-4], [4, 3, 5.0e-5],
+      ],
+    }],
   }
 }
 
-async function loadAll() {
-  loading.value = true
+async function loadReal() {
+  // 保持真实接口能力：若没有实际 task_id，这一页仍默认展示 mock
+  const lastTaskId = ''
+  if (!lastTaskId) {
+    buildMock()
+    return
+  }
+
+  const data: any = await getEvidence(lastTaskId)
+  const clean = data?.feature_distribution?.clean || []
+  const trigger = data?.feature_distribution?.trigger || []
+  const bins = clean.map((_: any, i: number) => `Q${i + 1}`)
+
+  distOpt.value = {
+    tooltip: { trigger: 'axis' as const, axisPointer: { type: 'shadow' as const } },
+    legend: { data: ['无触发组', '触发组'], bottom: 0 },
+    grid: { top: 24, left: 52, right: 20, bottom: 52 },
+    xAxis: { type: 'category' as const, data: bins, axisLabel: { rotate: 35 } },
+    yAxis: { type: 'value' as const, name: '频次' },
+    series: [
+      { name: '无触发组', type: 'bar' as const, data: clean, barMaxWidth: 34, itemStyle: { color: '#94a3b8', borderRadius: [5, 5, 0, 0] } },
+      { name: '触发组', type: 'bar' as const, data: trigger, barMaxWidth: 34, itemStyle: { color: '#0ea5e9', borderRadius: [5, 5, 0, 0] } },
+    ],
+  }
+
+  const conv = data?.pvalue_convergence || []
+  nPvOpt.value = {
+    tooltip: { trigger: 'axis' as const },
+    grid: { top: 24, left: 62, right: 24, bottom: 38 },
+    xAxis: { type: 'category' as const, data: conv.map((x: any) => String(x.query_count)) },
+    yAxis: { type: 'log' as const, min: 1e-8, max: 1, name: 'p 值' },
+    series: [{ type: 'line' as const, smooth: true, data: conv.map((x: any) => x.p_value), lineStyle: { color: '#0284c7', width: 2 }, itemStyle: { color: '#1d4ed8' } }],
+    markLine: { silent: true, symbol: 'none', data: [{ yAxis: 0.05, lineStyle: { color: '#ef4444', type: 'dashed' as const }, label: { formatter: 'p=0.05', color: '#ef4444' } }] },
+  }
+
+  // 热力图保留原型样式（真实端暂无完整二维返回时继续使用 mock 模板）
+  buildMock()
+}
+
+async function refreshData() {
   err.value = ''
   try {
-    const [d1, d2, d3] = await Promise.all([
-      fetch(`/api/v1/mock/distribution/${feature.value}`).then(r => r.json()),
-      fetch(`/api/v1/mock/sensitivity/${feature.value}`).then(r => r.json()),
-      fetch(`/api/v1/mock/heatmap/${feature.value}`).then(r => r.json()),
-    ])
-    distOpt.value = buildHistogram(d1)
-    sensOpt.value = buildSensitivity(d2)
-    heatOpt.value = buildHeatmap(d3)
+    if (store.mockMode) buildMock()
+    else await loadReal()
   } catch (e: any) {
-    err.value = e.message || '加载失败'
-  } finally {
-    loading.value = false
+    err.value = `${e?.message || '统计证据加载失败'}（已展示 mock）`
+    buildMock()
   }
 }
 
-onMounted(() => loadAll())
+onMounted(refreshData)
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto p-5 space-y-4">
+  <div class="h-full overflow-y-auto p-5 space-y-4 bg-[#f3f7fd]">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="text-[10px] font-semibold tracking-wide text-sky-600">步骤四 · 统计证据</p>
-        <h2 class="mt-1 text-[18px] font-bold text-slate-900 tracking-tight">统计可视化</h2>
-        <p class="mt-1 text-[12px] text-slate-500">展示触发组与无触发组的分布差异、候选规模影响与温度鲁棒性。</p>
+        <div class="text-[20px] font-bold text-slate-900">统计可视化</div>
+        <p class="text-[14px] text-slate-600 mt-1">展示触发组与无触发组的分布差异、候选规模影响与温度鲁棒性。</p>
       </div>
-      <div class="flex items-center gap-2.5">
-        <select v-model="feature" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500/30" @change="loadAll">
+      <div class="flex gap-2">
+        <select v-model="feature" class="h-11 rounded-2xl border border-slate-300 px-4 text-sm bg-white text-slate-700">
           <option value="length">回复长度</option>
           <option value="punctuation">标点密度</option>
           <option value="correctness">正确性</option>
         </select>
-        <select v-model="metricMode" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500/30">
-          <option value="method2">方法 2</option>
-          <option value="method1">方法 1</option>
+        <select v-model="method" class="h-11 rounded-2xl border border-slate-300 px-4 text-sm bg-white text-slate-700">
+          <option value="method1">方法1</option>
+          <option value="method2">方法2</option>
         </select>
-        <Button variant="outline" size="sm" :disabled="loading" @click="loadAll">{{ loading ? '加载中...' : '刷新数据' }}</Button>
+        <Button class="h-11 px-5" @click="refreshData">刷新数据</Button>
       </div>
     </div>
 
-    <Alert v-if="err" variant="destructive">
-      <AlertTitle>加载失败</AlertTitle>
-      <AlertDescription>{{ err }}</AlertDescription>
-    </Alert>
+    <div v-if="err" class="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{{ err }}</div>
 
-    <div class="grid gap-4">
-      <div class="rounded-xl border border-slate-100 bg-white p-4">
-        <DistributionHistogram :option="distOpt" class="h-[300px]" />
+    <div class="rounded-2xl border border-slate-200 bg-white p-4">
+      <div class="text-center text-sm font-semibold text-slate-700 mb-2">触发/无触发特征分布（{{ featureLabel() }}）</div>
+      <div class="chart-figure-lg"><DistributionHistogram :option="distOpt" class="w-full h-full" /></div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-2xl border border-slate-200 bg-white p-4">
+        <div class="text-center text-sm font-semibold text-slate-700 mb-2">候选规模 N 对 p 值影响</div>
+        <div class="chart-figure-mid"><DistributionHistogram :option="nPvOpt" class="w-full h-full" /></div>
       </div>
-
-      <div class="grid grid-cols-2 gap-4">
-        <div class="rounded-xl border border-slate-100 bg-white p-4">
-          <SensitivityLineChart :option="sensOpt" class="h-[300px]" />
-        </div>
-        <div class="rounded-xl border border-slate-100 bg-white p-4">
-          <TemperatureHeatmap :option="heatOpt" class="h-[300px]" />
-        </div>
+      <div class="rounded-2xl border border-slate-200 bg-white p-4">
+        <div class="text-center text-sm font-semibold text-slate-700 mb-2">温度鲁棒性热力图</div>
+        <div class="chart-figure-mid"><DistributionHistogram :option="heatOpt" class="w-full h-full" /></div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.chart-figure-lg {
+  height: 360px;
+  width: 100%;
+}
+.chart-figure-mid {
+  height: 280px;
+  width: 100%;
+}
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

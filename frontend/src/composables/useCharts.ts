@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+﻿import { ref, computed } from 'vue'
 import {
   fetchDistribution,
   fetchSensitivity,
@@ -47,17 +47,12 @@ export function useCharts() {
     if (!d) return {}
 
     return {
-      title: {
-        text: `特征分布：${d.feature === 'length' ? '回复长度' : d.feature === 'punctuation' ? '标点密度' : '正确性'}`,
-        left: 'center',
-        textStyle: { fontSize: 14 },
-      },
       tooltip: { trigger: 'axis' as const },
       legend: {
         data: ['Without Trigger', 'With Trigger'],
         bottom: 0,
       },
-      grid: { top: 50, bottom: 40, left: 50, right: 20 },
+      grid: { top: 24, bottom: 40, left: 50, right: 20 },
       xAxis: {
         type: 'category' as const,
         data: d.bins,
@@ -90,11 +85,6 @@ export function useCharts() {
     if (!d) return {}
 
     return {
-      title: {
-        text: '候选数量 N 对 P 值的影响',
-        left: 'center',
-        textStyle: { fontSize: 14 },
-      },
       tooltip: {
         trigger: 'axis' as const,
         formatter: (params: unknown) => {
@@ -102,7 +92,7 @@ export function useCharts() {
           return `${p.name}: p = ${p.data.toExponential(4)}`
         },
       },
-      grid: { top: 50, bottom: 40, left: 60, right: 20 },
+      grid: { top: 24, bottom: 40, left: 60, right: 20 },
       xAxis: {
         type: 'category' as const,
         data: d.nValues.map(String),
@@ -170,21 +160,16 @@ export function useCharts() {
     }
 
     return {
-      title: {
-        text: '温度参数 T 对检测灵敏度的影响',
-        left: 'center',
-        textStyle: { fontSize: 14 },
-      },
       tooltip: {
         formatter: (params: unknown) => {
           const p = params as { data: [number, number, number] }
           const tx = p.data[0]
           const ty = p.data[1]
           const pVal = d.pValueMatrix[ty][tx]
-          return `T = ${d.temperatures[ty]}, N = ${d.nValues[tx]}<br/>p = ${pVal.toExponential(3)}<br/>-log₁₀(p) = ${d.negLog10Matrix[ty][tx].toFixed(2)}`
+          return `T = ${d.temperatures[ty]}, N = ${d.nValues[tx]}<br/>p = ${pVal.toExponential(3)}<br/>-log鈧佲個(p) = ${d.negLog10Matrix[ty][tx].toFixed(2)}`
         },
       },
-      grid: { top: 50, bottom: 80, left: 70, right: 30 },
+      grid: { top: 24, bottom: 80, left: 70, right: 30 },
       xAxis: {
         type: 'category' as const,
         data: d.nValues.map(String),
@@ -246,3 +231,4 @@ export function useCharts() {
     heatmapOption,
   }
 }
+

@@ -41,7 +41,7 @@ withDefaults(defineProps<Props>(), {
 </script>
 
 <template>
-  <component :is="as" :class="buttonVariants({ variant, size })" :disabled="disabled">
+  <component :is="as" :class="buttonVariants({ variant, size })" :disabled="disabled" v-bind="$attrs">
     <slot />
   </component>
 </template>
