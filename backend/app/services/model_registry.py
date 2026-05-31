@@ -68,3 +68,14 @@ def get_model_by_id(model_id: str) -> dict | None:
             if model.get('id') == model_id:
                 return model
     return None
+
+
+def delete_model(model_id: str) -> bool:
+    data = list_models()
+    for bucket in ROLE_TO_BUCKET.values():
+        for i, model in enumerate(data.get(bucket, [])):
+            if model.get('id') == model_id:
+                data[bucket].pop(i)
+                _save_registry(data)
+                return True
+    return False

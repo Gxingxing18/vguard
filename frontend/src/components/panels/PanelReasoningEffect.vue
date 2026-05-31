@@ -201,79 +201,96 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-full p-4 overflow-y-auto bg-[#f8fbff] space-y-3">
-    <div><h2 class="text-[18px] font-bold">验证器触发前后排序行为核验</h2></div>
-    <div class="rounded-lg border bg-white p-3 grid grid-cols-6 gap-2 items-end">
-      <div class="col-span-2"><label class="text-[11px]">候选生成模型</label><select v-model="genModelId" class="w-full h-9 rounded border px-2 text-sm"><option v-for="g in genOptions" :key="g.id" :value="g.id">{{ g.name }}</option></select></div>
-      <div class="col-span-2"><label class="text-[11px]">待核验 Verifier</label><select v-model="verifierModelId" class="w-full h-9 rounded border px-2 text-sm"><option v-for="v in verOptions" :key="v.id" :value="v.id">{{ v.name }}</option></select></div>
-      <div><label class="text-[11px]">行为类型</label><select v-model="feature" class="w-full h-9 rounded border px-2 text-sm"><option value="length">回复长度</option><option value="punctuation">标点密度</option><option value="correctness">正确性</option></select></div>
-      <div><label class="text-[11px]">候选数</label><input v-model.number="candidateCount" class="w-full h-9 rounded border px-2 text-sm" /></div>
-      <div class="col-span-2"><Button class="w-full" :disabled="loading" @click="run">{{ loading ? '运行中' : '生成候选并核验 Verifier 排序' }}</Button></div>
-      <div class="col-span-6"><label class="text-[11px]">问题</label><textarea v-model="query" class="w-full rounded border px-2 py-2 text-sm" rows="2" /></div>
-    </div>
+  <div class="h-full flex min-h-0">
+    <!-- Left: Config -->
+    <section class="w-[38%] p-4 bg-white space-y-3 overflow-y-auto">
+      <h2 class="text-[17px] font-bold">验证器行为核验</h2>
 
-    <div v-if="err" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ err }}</div>
+      <div><label class="text-[11px]">候选生成模型</label><select v-model="genModelId" class="w-full h-9 rounded-lg border px-3 text-sm"><option v-for="g in genOptions" :key="g.id" :value="g.id">{{ g.name }}</option></select></div>
+      <div><label class="text-[11px]">待核验 Verifier</label><select v-model="verifierModelId" class="w-full h-9 rounded-lg border px-3 text-sm"><option v-for="v in verOptions" :key="v.id" :value="v.id">{{ v.name }}</option></select></div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="text-[11px]">行为类型</label><select v-model="feature" class="w-full h-9 rounded-lg border px-3 text-sm"><option value="length">回复长度</option><option value="punctuation">标点密度</option><option value="correctness">正确性</option></select></div>
+        <div><label class="text-[11px]">候选数</label><input v-model.number="candidateCount" class="w-full h-9 rounded-lg border px-3 text-sm" /></div>
+      </div>
+      <div><label class="text-[11px]">问题</label><textarea v-model="query" class="w-full rounded-lg border px-3 py-2 text-sm" rows="4" /></div>
 
-    <div class="rounded-lg border bg-white p-3">
-      <div class="text-[13px] font-semibold mb-2">评分行为可视化</div>
-    <div class="grid grid-cols-2 gap-3">
-      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(a) Clean Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
-      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(b) Clean Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
-      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(c) Watermarked Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
-      <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(d) Watermarked Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
-    </div>
+      <Button class="w-full" :disabled="loading" @click="run">{{ loading ? '运行中' : '生成候选并核验排序' }}</Button>
 
-    <div class="rounded-lg border bg-white p-3 text-[12px] grid grid-cols-2 gap-1">
-      <div>Clean Verifier 无触发 Corr(feature, score)：{{ corrPoints((cleanVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
-      <div>Clean Verifier 有触发 Corr(feature, score)：{{ corrPoints((cleanVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
-      <div>Watermarked Verifier 无触发 Corr(feature, score)：{{ corrPoints((wmVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
-      <div>Watermarked Verifier 有触发 Corr(feature, score)：{{ corrPoints((wmVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
-    </div>
-    </div>
+      <div v-if="err" class="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{{ err }}</div>
 
-    <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">Top-K 排名变化图</div><div class="chart-figure-compact"><DistributionHistogram :option="topKOpt" class="w-full h-full" /></div></div>
+      <!-- Summary after run -->
+      <div v-if="summary" class="rounded-lg border bg-slate-50 p-2 text-[11px] space-y-1">
+        <div class="font-semibold text-xs">核验摘要</div>
+        <div>Top-1 变化：{{ summary.top1_change }}</div>
+        <div>Top-5 重排：{{ summary.top5_reorder_ratio }}</div>
+        <div>特征变化：{{ summary.feature_delta_percent }}%</div>
+        <div>符合方向：{{ summary.matches_watermark_direction ? '是' : '否' }}</div>
+      </div>
+    </section>
 
-    <div v-if="summary" class="rounded-lg border bg-white p-3 text-[12px] grid grid-cols-3 gap-1">
-      <div>Top-1 候选变化：{{ summary.top1_change }}</div>
-      <div>Top-5 重排比例：{{ summary.top5_reorder_ratio }}</div>
-      <div>平均特征变化：{{ summary.mean_clean_feature }} → {{ summary.mean_trigger_feature }}</div>
-      <div>特征变化%：{{ summary.feature_delta_percent }}</div>
-      <div>KL 散度：{{ summary.kl_divergence }}</div>
-      <div>符合方向：{{ summary.matches_watermark_direction ? '是' : '否' }}</div>
-    </div>
+    <!-- Right: Results -->
+    <section class="flex-1 p-4 bg-[#f8fbff] overflow-y-auto space-y-3">
+      <div><h3 class="text-[18px] font-bold text-slate-900">评分行为可视化</h3></div>
 
-    <div class="rounded-lg border bg-white p-3 space-y-2">
-      <div class="text-[13px] font-semibold">候选列表与回答输出</div>
-      <div class="grid grid-cols-2 gap-2 text-[12px]">
-        <div class="rounded border p-2">
-          <div class="font-semibold mb-1">无触发输出（Top-1）</div>
-          <div class="text-slate-600 whitespace-pre-wrap">{{ cleanOutput?.text || '-' }}</div>
-        </div>
-        <div class="rounded border p-2">
-          <div class="font-semibold mb-1">有触发输出（Top-1）</div>
-          <div class="text-slate-600 whitespace-pre-wrap">{{ triggerOutput?.text || '-' }}</div>
+      <!-- 4 scatter charts -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(a) Clean Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
+        <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(b) Clean Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="cleanVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
+        <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(c) Watermarked Verifier，无触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierNoTriggerOpt" class="w-full h-full" /></div></div>
+        <div class="rounded-lg border bg-white p-2"><div class="text-[12px] font-semibold mb-1">(d) Watermarked Verifier，有触发</div><div class="chart-figure-compact"><DistributionHistogram :option="wmVerifierWithTriggerOpt" class="w-full h-full" /></div></div>
+      </div>
+
+      <!-- Correlation -->
+      <div class="rounded-lg border bg-white p-3 text-xs grid grid-cols-2 gap-1">
+        <div>Clean 无触发 Corr：{{ corrPoints((cleanVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+        <div>Clean 有触发 Corr：{{ corrPoints((cleanVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+        <div>WM 无触发 Corr：{{ corrPoints((wmVerifierNoTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+        <div>WM 有触发 Corr：{{ corrPoints((wmVerifierWithTriggerOpt.series?.[0] as any)?.data || []) }}</div>
+      </div>
+
+      <!-- Top-K -->
+      <div class="rounded-lg border bg-white p-3">
+        <div class="text-[13px] font-semibold mb-2">Top-K 排名变化图</div>
+        <div class="chart-figure-compact"><DistributionHistogram :option="topKOpt" class="w-full h-full" /></div>
+      </div>
+
+      <!-- Candidate outputs -->
+      <div class="rounded-lg border bg-white p-3 space-y-2">
+        <div class="text-[13px] font-semibold">候选输出对比</div>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <div class="rounded border p-2">
+            <div class="font-semibold mb-1">无触发输出（Top-1）</div>
+            <div class="text-slate-600 whitespace-pre-wrap">{{ cleanOutput?.text || '-' }}</div>
+          </div>
+          <div class="rounded border p-2">
+            <div class="font-semibold mb-1">有触发输出（Top-1）</div>
+            <div class="text-slate-600 whitespace-pre-wrap">{{ triggerOutput?.text || '-' }}</div>
+          </div>
         </div>
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-[12px]">
+
+      <!-- Candidate table -->
+      <div class="rounded-lg border bg-white p-3 overflow-x-auto" v-if="rows.length">
+        <div class="text-[13px] font-semibold mb-2">候选排名列表</div>
+        <table class="w-full text-xs">
           <thead>
             <tr class="text-left border-b bg-slate-50">
               <th class="px-2 py-1">ID</th>
               <th class="px-2 py-1">候选回答</th>
-              <th class="px-2 py-1">无触发分数/排名</th>
-              <th class="px-2 py-1">触发分数/排名</th>
+              <th class="px-2 py-1">无触发 分数/排名</th>
+              <th class="px-2 py-1">触发 分数/排名</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in rows" :key="r.id" class="border-b align-top">
               <td class="px-2 py-1">{{ r.id }}</td>
-              <td class="px-2 py-1 max-w-[520px] whitespace-pre-wrap break-words">{{ r.text }}</td>
+              <td class="px-2 py-1 max-w-[400px] whitespace-pre-wrap break-words">{{ r.text }}</td>
               <td class="px-2 py-1">{{ Number(r.clean_score).toFixed(4) }} / #{{ r.clean_rank }}</td>
               <td class="px-2 py-1">{{ Number(r.trigger_score).toFixed(4) }} / #{{ r.trigger_rank }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   </div>
 </template>

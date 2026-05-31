@@ -1,10 +1,55 @@
 """Injection service - routes to mock or real runner."""
 
 import asyncio
+import time
 from pathlib import Path
 
 from app.config import DATASET_PATHS, DEFAULTS, FORCE_MOCK_ENABLED, GPU_AVAILABLE, MOCK_MODE_ENABLED, VERIFIER_MODELS
+from app.services.model_registry import register_model
 from app.services.task_manager import task_manager
+
+FEATURE_LABEL_MAP = {
+    "length": "回复长度",
+    "punctuation": "标点密度",
+    "correctness": "正确性",
+}
+METHOD_LABEL_MAP = {
+    "correctness": "标签翻转",
+    "length": "特征重排",
+    "punctuation": "特征重排",
+}
+
+
+def _register_watermarked_model(task_id: str, config: dict, result: dict) -> str | None:
+    model_name = config.get("modelName", "Llama3.1-8B-BT")
+    feature = config.get("feature", "length")
+    trigger = config.get("trigger", DEFAULTS["trigger"])
+    wm_num = config.get("watermarkNum", DEFAULTS["watermark_num"])
+    output_dir = result.get("outputDir", "")
+    model_path = config.get("modelPath", "")
+    metrics = result.get("metrics", {})
+
+    record = register_model({
+        "role": "watermarked_verifier",
+        "name": f"{model_name}-{feature}-wm",
+        "model_type": "BT Verifier (水印)",
+        "path": output_dir or model_path,
+        "backend": "hf_transformers",
+        "status": "已登记",
+        "metadata": {
+            "task_id": task_id,
+            "base_verifier": model_name,
+            "feature": FEATURE_LABEL_MAP.get(feature, feature),
+            "method": METHOD_LABEL_MAP.get(feature, "特征重排"),
+            "trigger": trigger,
+            "train_samples": wm_num,
+            "clean_eval_acc": f"{(metrics.get('evalAccuracy', 0) * 100):.1f}%",
+            "wm_accuracy": f"{(metrics.get('wmAccuracy', 0) * 100):.1f}%",
+            "train_loss": metrics.get("trainLoss", 0),
+            "registered_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+    })
+    return record.get("id")
 
 
 def _resolve_use_mock(config: dict) -> bool:
@@ -20,7 +65,7 @@ async def run_injection_task(task_id: str, config: dict):
     try:
         task_manager.set_running(task_id)
         if use_mock:
-            await _run_mock_injection(task_id)
+            await _run_mock_injection(task_id, config)
         else:
             await _run_real_injection(task_id, config)
     except Exception as e:
@@ -32,7 +77,7 @@ async def run_injection_task(task_id: str, config: dict):
         })
 
 
-async def _run_mock_injection(task_id: str):
+async def _run_mock_injection(task_id: str, config: dict):
     from app.services.mock_data import INJECTION_CURVE
 
     for progress, phase, data in INJECTION_CURVE:
@@ -47,7 +92,14 @@ async def _run_mock_injection(task_id: str):
         })
         await asyncio.sleep(0.5)
 
-    task_manager.complete_task(task_id)
+    # Register in model registry
+    mock_result = {
+        "outputDir": config.get("modelPath", "/home/data/wm/new_model"),
+        "metrics": {"evalAccuracy": 0.94, "wmAccuracy": 0.94, "trainLoss": 0.0832},
+    }
+    wm_id = _register_watermarked_model(task_id, config, mock_result)
+
+    task_manager.complete_task(task_id, data={"result": mock_result, "wm_id": wm_id})
     await task_manager.broadcast(task_id, {
         "type": "complete",
         "taskId": task_id,
@@ -125,7 +177,9 @@ async def _run_real_injection(task_id: str, config: dict):
     if result.get("status") == "cancelled":
         task_manager.cancel_task(task_id)
     else:
-        task_manager.complete_task(task_id, data=result)
+        wm_id = _register_watermarked_model(task_id, config, result)
+        result["wm_id"] = wm_id
+        task_manager.complete_task(task_id, data={"result": result, "wm_id": wm_id})
         await task_manager.broadcast(task_id, {
             "type": "complete",
             "taskId": task_id,
