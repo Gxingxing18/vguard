@@ -19,3 +19,9 @@ export function testLoadModel(model_id: string) {
     body: JSON.stringify({ model_id }),
   })
 }
+
+export function deleteModel(model_id: string) {
+  return apiFetch(`/api/v1/models/${encodeURIComponent(model_id)}`, {
+    method: 'DELETE',
+  })
+}

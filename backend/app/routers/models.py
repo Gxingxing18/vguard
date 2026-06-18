@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from app.core.config import VGUARD_DEVICE, VGUARD_DTYPE, VGUARD_VLLM_BASE_URL
 from app.services.llm_service import vllm_list_models
-from app.services.model_registry import get_model_by_id, list_models, register_model
+from app.services.model_registry import delete_model, get_model_by_id, list_models, register_model
 
 router = APIRouter()
 
@@ -67,3 +67,11 @@ async def api_test_load(payload: dict):
         }
     except Exception as e:
         return {'success': False, 'error_code': 'MODEL_LOAD_FAILED', 'message': f'Verifier 模型加载失败：{e}', 'logs': []}
+
+
+@router.delete('/models/{model_id}')
+async def api_delete_model(model_id: str):
+    ok = delete_model(model_id)
+    if ok:
+        return {'success': True, 'message': f'模型 {model_id} 已删除'}
+    return {'success': False, 'error_code': 'MODEL_NOT_FOUND', 'message': f'model_id 不存在: {model_id}', 'logs': []}
